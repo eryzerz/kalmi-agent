@@ -1,0 +1,25 @@
+{
+	"name": "kalmi",
+	"type": "module",
+	"scripts": {
+		"kalmi": "tsx kalmi/agent.ts"
+	},
+	"dependencies": {
+		"@ai-sdk/devtools": "^1.0.6",
+		"@ai-sdk/mcp": "^2.0.15",
+		"@ai-sdk/otel": "^1.0.31",
+		"@ai-sdk/tui": "^1.0.32",
+		"@openrouter/ai-sdk-provider": "^3.0.0",
+		"@opentelemetry/exporter-trace-otlp-grpc": "^0.220.0",
+		"@opentelemetry/resources": "^2.9.0",
+		"@opentelemetry/sdk-trace-node": "^2.9.0",
+		"ai": "^7.0.31",
+		"dotenv": "^17.4.2",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"@types/node": "^26.1.1",
+		"tsx": "^4.19.0",
+		"typescript": "^7.0.2"
+	}
+}
