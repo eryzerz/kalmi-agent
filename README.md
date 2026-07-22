@@ -9,8 +9,10 @@ A terminal-based AI agent powered by the [Vercel AI SDK](https://sdk.vercel.ai/)
 ```mermaid
 graph TD
     subgraph Host
-        kalmi[<b>kalmi-agent</b><br/>ToolLoopAgent + OpenRouter]
-        kalmi --> |OTLP gRPC| jaeger[Jaeger<br/>all-in-one]
+        tui[<b>@kalmi/tui</b><br/>Ink v5 terminal UI]
+        core[<b>@kalmi/core</b><br/>agent factory + tools + sessions]
+        tui --> core
+        core --> |OTLP gRPC| jaeger[Jaeger<br/>all-in-one]
     end
 
     subgraph Docker
@@ -24,9 +26,9 @@ graph TD
         jaeger[Jaeger<br/>UI :16686]
     end
 
-    kalmi --> |MCP / SSE| cognee_mcp
-    kalmi --> |MCP / HTTP| crw
-    kalmi --> |OpenRouter API| LLM[OpenRouter<br/>300+ models]
+    core --> |MCP / SSE| cognee_mcp
+    core --> |MCP / HTTP| crw
+    core --> |OpenRouter API| LLM[OpenRouter<br/>300+ models]
 
     cognee_mcp --> postgres
     cognee_mcp --> neo4j
@@ -39,7 +41,7 @@ graph TD
 ```mermaid
 sequenceDiagram
     actor User
-    participant TUI as kalmi TUI
+    participant TUI as @kalmi/tui (Ink)
     participant Agent as ToolLoopAgent
     participant LLM as OpenRouter
     participant Cognee as cognee-mcp
@@ -47,8 +49,8 @@ sequenceDiagram
     participant Jaeger as Jaeger
 
     User->>TUI: type message
-    TUI->>Agent: agent.stream({ prompt })
-    Note over Agent: prepareStep<br/>injects current time
+    TUI->>Agent: agent.generate({ prompt })
+    Note over Agent: prepareStep<br/>injects current time<br/>saves checkpoint
     Agent->>LLM: generateText({ messages, tools })
 
     alt tool call: remember/recall
@@ -65,10 +67,53 @@ sequenceDiagram
 
     Agent->>LLM: generateText({ messages, toolResults })
     LLM-->>Agent: final response
-    Agent-->>TUI: stream response
+    Agent-->>TUI: result.text
     Agent->>Jaeger: OTel spans
-    TUI-->>User: render response
+    Note over Agent: onEnd<br/>clears checkpoint<br/>appends JSONL log
+    TUI-->>User: render markdown
 ```
+
+### Monorepo Structure
+
+```
+kalmi-agent/
+├── packages/
+│   └── core/                   @kalmi/core — shared library
+│       └── src/
+│           ├── index.ts               session, checkpoint, chatlog, telemetry, prompts (light)
+│           ├── agent.ts               ToolLoopAgent factory with OpenRouter (heavy)
+│           ├── tools.ts               merges MCP tools + custom tools (heavy)
+│           ├── mcp.ts                 multi-server MCP client manager
+│           ├── session.ts             SQLite-backed session CRUD
+│           ├── checkpoint.ts          SQLite checkpoint save / get / clear
+│           ├── chatlog.ts             JSONL turn logger
+│           ├── telemetry.ts           OTel tracer + Jaeger gRPC exporter
+│           ├── prompts.ts             built-in system prompts
+│           ├── db.ts                  SQLite schema + connection (better-sqlite3)
+│           ├── types.ts               Session, PromptDefinition, ChatLogEntry
+│           └── tools/                 sys tools (read, write, bash, grep, glob)
+├── apps/
+│   ├── tui/                    @kalmi/tui — Ink terminal UI
+│   │   └── src/
+│   │       ├── entry.ts              dotenv load, session init, render App
+│   │       └── app.tsx               Ink chat component with agent.generate()
+│   └── web/                    @kalmi/web — Next.js web UI (planned)
+└── .kalmi/                     generated
+    ├── kalmi.db                SQLite database (sessions, checkpoints)
+    └── logs/{sessionId}.jsonl  per-session JSONL conversation logs
+```
+
+### Subpath Exports
+
+`@kalmi/core` uses subpath exports to keep light consumers from pulling in heavy dependencies (OpenRouter, MCP):
+
+| Export | Contents | Heavy deps? |
+|---|---|---|
+| `@kalmi/core` | sessions, checkpoints, chatlog, telemetry, prompts | No |
+| `@kalmi/core/agent` | `createAgent()` with OpenRouter + MCP tools | Yes |
+| `@kalmi/core/tools` | `buildTools()` — MCP + custom tool merge | Yes |
+
+Apps import the heavy exports via dynamic `import()` to load `.env` before any heavy module initializes.
 
 ## Prerequisites
 
@@ -89,7 +134,7 @@ Edit `.env` — at minimum set your OpenRouter key and model:
 
 ```dotenv
 OPENROUTER_API_KEY=sk-or-v1-...
-OPENROUTER_MODEL=openai/gpt-4o
+OPENROUTER_MODEL=z-ai/glm-5.2
 ```
 
 ### External services
@@ -178,35 +223,28 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 ## Running
 
 ```bash
-pnpm kalmi                    # start TUI with current session
-pnpm kalmi --new <name>       # create a new session
-pnpm kalmi --new <name> --prompt coder --model anthropic/claude-sonnet
-pnpm kalmi --switch <id>      # switch to another session
-pnpm kalmi --list             # list all sessions
-pnpm kalmi --delete <id>      # delete a session
-pnpm kalmi --prompts          # list available system prompts
-pnpm kalmi --help             # show usage
+pnpm kalmi:tui                 # start TUI with current session
 ```
+
+TUI commands (type in the chat):
+
+- `Esc` — exit
 
 ## Sessions
 
-kalmi sessions manage conversation identity and configuration. Each session stores:
+Sessions are stored in SQLite (`.kalmi/kalmi.db`) — no JSON file, no manual editing. Each session stores:
 
-- A UUID and name
-- A system prompt (preset)
-- A model ID
-- A creation timestamp
+- UUID and name
+- System prompt (preset)
+- Model ID
+- Creation timestamp
 
-Sessions are persisted in `.kalmi/sessions.json`. The current session is tracked automatically.
+The `current_session` table tracks the active session. On first run, a default session is created automatically.
 
-### Built-in prompts
 
-| Name | Description |
-|---|---|
-| `default` | General-purpose assistant |
-| `coder` | Software engineering assistant |
-| `reviewer` | Code reviewer |
-| `writer` | Writing and editing assistant |
+### Chat History Display
+
+When a session starts, the last 10 turns from `.kalmi/logs/{sessionId}.jsonl` are loaded and rendered in the TUI — user messages, tool calls, and assistant responses appear inline, giving context for a new message.
 
 ## MCP Tools
 
@@ -236,28 +274,34 @@ The agent is instructed to pass `session_id` (the kalmi session UUID) for fast s
 
 ## Adding a custom tool
 
-Custom AI SDK tools go in `kalmi/tools/index.ts`:
+Custom AI SDK tools go in `packages/core/src/tools/`:
 
 ```typescript
 import { tool } from 'ai';
 import { z } from 'zod';
 
+export const myTool = tool({
+  description: 'Description for the LLM',
+  parameters: z.object({ query: z.string() }),
+  execute: async ({ query }) => {
+    // your logic
+    return 'result';
+  },
+});
+```
+
+Then add it to the `tools` object in `packages/core/src/tools.ts`:
+
+```typescript
 const tools = {
   ...mcpTools,
-  myTool: tool({
-    description: 'Description for the LLM',
-    parameters: z.object({ query: z.string() }),
-    execute: async ({ query }) => {
-      // your logic
-      return 'result';
-    },
-  }),
+  myTool,
 };
 ```
 
 ## Tracing
 
-kalmi exports OpenTelemetry spans to Jaeger. Spans follow [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) — each agent turn produces:
+kalmi exports OpenTelemetry spans to Jaeger. Tracer setup is in `packages/core/src/telemetry.ts` — spans are created via `@ai-sdk/otel` integration with the `ai` SDK. Each agent turn produces:
 
 ```
 invoke_agent {model}         ← root span
@@ -267,56 +311,30 @@ invoke_agent {model}         ← root span
   └── ...
 ```
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env` (defaults to `http://localhost:4317`). Open `http://localhost:16686` and select service `kalmi`. Tracer setup lives in `kalmi/ops/telemetry.ts`.
+Tracing is initialized once in `apps/tui/src/entry.ts` with `initTelemetry()`. Set `OTEL_EXPORTER_OTLP_ENDPOINT` in `.env` (defaults to `http://localhost:4317`). Open `http://localhost:16686` and select service `kalmi`.
 
 ## Chat Logs
 
-Every conversation turn is automatically logged to `.kalmi/logs/{sessionId}.jsonl` — one JSON object per line, containing the user prompt, assistant response, and any tool calls with their results.
+Every conversation turn is automatically logged to `.kalmi/logs/{sessionId}.jsonl` — one JSON object per line:
 
 ```jsonl
 {"timestamp":"2026-07-20T12:00:00Z","user":"tell me about plekhanov","assistant":"Plekhanov was...","toolCalls":[{"name":"remember","args":{"data":"..."}}],"toolResults":[{"name":"remember","result":"..."}]}
 ```
 
-Inspect logs directly from the terminal:
+Logs are per-session, append-only — each session UUID gets its own file.
 
-```bash
-cat .kalmi/logs/<uuid>.jsonl | jq .user
-cat .kalmi/logs/<uuid>.jsonl | jq .toolCalls
-```
-
-Logs are per-session, append-only, and isolated — each kalmi session UUID gets its own file.
-
-## Directory Structure
-
-```
-kalmi-agent/
-├── kalmi/
-│   ├── agent.ts              # main entrypoint — TUI + ToolLoopAgent
-│   ├── ops/
-│   │   └── telemetry.ts      # OTel tracer setup + AI SDK integration
-│   ├── tools/
-│   │   ├── index.ts          # merges MCP tools + custom tools
-│   │   └── mcp.ts            # multi-server MCP client manager
-│   └── runtime/
-│       ├── index.ts          # re-exports
-│       ├── types.ts          # Session, PromptDefinition
-│       ├── session.ts        # session CRUD backed by .kalmi/sessions.json
-│       ├── prompts.ts        # built-in system prompts
-│       └── chatlog.ts        # JSONL turn logger
-├── .env.example
-├── package.json
-├── tsconfig.json
-└── .kalmi/                   # generated
-    ├── sessions.json         # session store
-    └── logs/                 # per-session JSONL chat logs
-```
+On TUI startup, the last 10 turns are loaded and displayed inline for conversation context.
 
 ## Roadmap
 
 - [x] **Core agent** — ToolLoopAgent with OpenRouter, session management, and MCP multi-server support
+- [x] **Monorepo restructuring** — `@kalmi/core` (shared library) + `@kalmi/tui` (Ink terminal UI)
+- [x] **SQLite sessions** — Replaced JSON file with SQLite-backed sessions, checkpoints, and resume flow
+- [x] **Ink TUI** — Terminal chat UI with markdown rendering, tool call progress, and chat history display
 - [x] **Persistent memory + RAG** — Knowledge graph via cognee (Neo4j + Postgres + Redis), session-scoped caching
 - [x] **Web access** — Scraping, crawling, and site mapping via CRW / FastCRW
 - [x] **Observability** — OpenTelemetry tracing to Jaeger, JSONL conversation logs
+- [ ] **Web gateway** (`apps/web`) — Next.js frontend with `useChat`, importing `@kalmi/core/agent` server-side
 - [ ] **Discord gateway** — Bot interface for Discord servers
 - [ ] **Telegram gateway** — Bot interface for Telegram chats
 - [ ] **Skills** — Reusable prompt + tool packs for domain-specific workflows

@@ -1,10 +1,11 @@
-import type { PromptDefinition } from './types';
+import type { PromptDefinition } from './types.js';
 
 export const builtinPrompts: PromptDefinition[] = [
   {
     name: 'default',
     description: 'General-purpose assistant',
-    content: 'You are a helpful assistant. Answer concisely in markdown. Never use emojis',
+    content:
+      'You are a helpful assistant. Answer concisely in markdown. Never use emojis',
   },
   {
     name: 'coder',

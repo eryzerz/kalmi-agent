@@ -1,0 +1,25 @@
+{
+  "name": "@kalmi/tui",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/entry.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kalmi/core": "workspace:*",
+    "ai": "^7.0.31",
+    "dotenv": "^17.4.2",
+    "ink": "^5.2.0",
+    "ink-text-input": "^6.0.0",
+    "marked": "^18.0.6",
+    "marked-terminal": "^7.3.0",
+    "react": "^18.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}

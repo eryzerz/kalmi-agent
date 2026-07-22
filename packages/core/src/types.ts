@@ -6,13 +6,16 @@ export interface Session {
   createdAt: Date;
 }
 
-export interface SessionStore {
-  sessions: Session[];
-  currentSessionId: string | null;
-}
-
 export interface PromptDefinition {
   name: string;
   description: string;
   content: string;
+}
+
+export interface ChatLogEntry {
+  timestamp: string;
+  user: string;
+  assistant: string;
+  toolCalls: { name: string; args: unknown }[];
+  toolResults: { name: string; result: unknown }[];
 }
