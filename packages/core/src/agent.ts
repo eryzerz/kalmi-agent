@@ -4,9 +4,16 @@ import type { Session } from './types.js';
 import { appendTurn } from './chatlog.js';
 import { saveCheckpoint, clearCheckpoint } from './checkpoint.js';
 import { buildTools } from './tools.js';
+import { AgentEventSchema } from './schemas.js';
+import { PartialResultError, MalformedDataError, formatZodErrors } from './errors.js';
+
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+if (!OPENROUTER_API_KEY) {
+  console.warn('OPENROUTER_API_KEY is not set. LLM calls will fail with 401.');
+}
 
 const openrouter = createOpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY,
+  apiKey: OPENROUTER_API_KEY,
 });
 
 let pendingTurn: string | null = null;
@@ -34,13 +41,17 @@ export async function createAgent(
     instructions,
     tools,
     prepareCall: resumeFrom
-      ? (options) => {
-          const { prompt: _, ...rest } = options;
+      ? (prepareOptions) => {
+          const { prompt: _, ...rest } = prepareOptions;
           return { ...rest, messages: resumeFrom };
         }
       : undefined,
     prepareStep: ({ initialInstructions, messages }) => {
-      saveCheckpoint(session.id, messages);
+      try {
+        saveCheckpoint(session.id, messages);
+      } catch (err) {
+        console.warn(`Failed to save checkpoint: ${err instanceof Error ? err.message : String(err)}`);
+      }
 
       if (!pendingTurn) {
         const userMessages = messages.filter((m: any) => m.role === 'user');
@@ -59,20 +70,56 @@ export async function createAgent(
       };
     },
     onEnd: (event) => {
-      clearCheckpoint(session.id);
+      try {
+        clearCheckpoint(session.id);
+      } catch {
+        // non-critical
+      }
 
       if (!pendingTurn) return;
 
-      const tc = (event as any).toolCalls || (event as any).dynamicToolCalls || [];
-      const tr = (event as any).toolResults || (event as any).dynamicToolResults || [];
+      const parsed = AgentEventSchema.safeParse(event);
 
-      appendTurn(session.id, {
-        timestamp: new Date().toISOString(),
-        user: pendingTurn,
-        assistant: (event as any).text ?? '',
-        toolCalls: tc.map((t: any) => ({ name: t.toolName, args: t.args })),
-        toolResults: tr.map((t: any) => ({ name: t.toolName, result: t.result })),
-      });
+      if (!parsed.success) {
+        console.warn(new MalformedDataError(
+          'Agent event has unexpected shape, using best-effort extraction',
+          'agent.onEnd',
+          formatZodErrors(parsed.error),
+          event,
+        ).message);
+      }
+
+      const raw = parsed.success ? parsed.data : event as any;
+
+      const toolCalls = [
+        ...(raw.toolCalls ?? []),
+        ...(raw.dynamicToolCalls ?? []),
+      ];
+      const toolResults = [
+        ...(raw.toolResults ?? []),
+        ...(raw.dynamicToolResults ?? []),
+      ];
+
+      const text = raw.text ?? '';
+
+      try {
+        appendTurn(session.id, {
+          timestamp: new Date().toISOString(),
+          user: pendingTurn,
+          assistant: text,
+          toolCalls: toolCalls.map((t: any) => ({
+            name: t.toolName ?? t.name ?? 'unknown',
+            args: t.args,
+          })),
+          toolResults: toolResults.map((t: any) => ({
+            name: t.toolName ?? t.name ?? 'unknown',
+            result: t.result,
+          })),
+        });
+      } catch (err) {
+        console.warn(`Failed to append turn to chat log: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       pendingTurn = null;
     },
   });

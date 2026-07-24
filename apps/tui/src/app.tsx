@@ -4,6 +4,7 @@ import TextInput from 'ink-text-input';
 import type { ToolLoopAgent } from 'ai';
 import { marked } from 'marked';
 import TerminalRenderer from 'marked-terminal';
+import { classifyError, TransientError, PermanentError } from '@kalmi/core';
 
 marked.setOptions({
   renderer: new TerminalRenderer(),
@@ -75,23 +76,59 @@ export function App({ agent, sessionName, isResuming, initialMessages, onExit }:
           },
         });
 
+        const text = result.text ?? '';
+
         setMessages((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             role: 'assistant',
-            content: result.text ?? '',
+            content: text,
           },
         ]);
-      } catch (err: any) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: 'system',
-            content: `Error: ${err.message}`,
-          },
-        ]);
+      } catch (err: unknown) {
+        const classified = classifyError(err);
+
+        if (classified instanceof TransientError) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: `Connection issue — the LLM or a tool didn't respond in time. Please try again.\n\n(${classified.message})`,
+            },
+          ]);
+        } else if (err instanceof Error && 'partial' in err) {
+          const partialErr = err as Error & { partial?: Record<string, unknown>; missingFields?: string[] };
+          const partialText = partialErr.partial?.text as string | undefined;
+          if (partialText) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: `${partialText}\n\n[Response was truncated]`,
+              },
+            ]);
+          }
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: `Partial response received. ${classified.message}`,
+            },
+          ]);
+        } else {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: `Error: ${classified.message}`,
+            },
+          ]);
+        }
       } finally {
         setStreaming(false);
       }

@@ -6,19 +6,25 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 
 export function initTelemetry(): void {
-  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4317';
+  try {
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4317';
 
-  const provider = new NodeTracerProvider({
-    resource: resourceFromAttributes({ 'service.name': 'kalmi' }),
-    spanProcessors: [
-      new SimpleSpanProcessor(new OTLPTraceExporter({ url: endpoint })),
-    ],
-  });
-  provider.register();
+    const provider = new NodeTracerProvider({
+      resource: resourceFromAttributes({ 'service.name': 'kalmi' }),
+      spanProcessors: [
+        new SimpleSpanProcessor(new OTLPTraceExporter({ url: endpoint })),
+      ],
+    });
+    provider.register();
 
-  registerTelemetry(
-    new OpenTelemetry({
-      tracer: provider.getTracer('kalmi'),
-    }),
-  );
+    registerTelemetry(
+      new OpenTelemetry({
+        tracer: provider.getTracer('kalmi'),
+      }),
+    );
+  } catch (err) {
+    console.warn(
+      `Telemetry initialization failed (non-critical): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }

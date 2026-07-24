@@ -1,4 +1,5 @@
 import { createMCPClient, type MCPClient } from '@ai-sdk/mcp';
+import { retry, type RetryConfig } from './retry.js';
 
 type MCPServerDef = {
   name: string;
@@ -28,7 +29,12 @@ function loadServerDefs(): MCPServerDef[] {
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
     if (rawHeaders) {
       try {
-        Object.assign(headers, JSON.parse(rawHeaders));
+        const parsed = JSON.parse(rawHeaders);
+        if (typeof parsed === 'object' && parsed !== null) {
+          for (const [k, v] of Object.entries(parsed)) {
+            headers[k] = String(v);
+          }
+        }
       } catch {
         console.warn(`Failed to parse MCP_${upper}_HEADERS as JSON, ignoring.`);
       }
@@ -47,22 +53,61 @@ export async function initMCP(): Promise<MCPBridge> {
   const servers = loadServerDefs();
   const clients: MCPClient[] = [];
 
+  const retryConfig: RetryConfig = {
+    onAttempt: (attempt, err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`  MCP connection attempt ${attempt} failed: ${msg}`);
+    },
+  };
+
   for (const def of servers) {
     console.error(`Connecting to MCP server "${def.name}" via ${def.transport.type} at ${def.transport.url}`);
-    const client = await createMCPClient({
-      transport: def.transport,
-      clientName: def.name,
-    });
-    clients.push(client);
+
+    try {
+      const client = await retry(
+        async () => {
+          return await createMCPClient({
+            transport: def.transport,
+            clientName: def.name,
+          });
+        },
+        retryConfig,
+      );
+      clients.push(client);
+      console.error(`  "${def.name}" connected successfully`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  "${def.name}" unreachable after all attempts: ${msg}`);
+    }
   }
 
-  const toolSets = await Promise.all(clients.map((c) => c.tools()));
-  const tools = Object.assign({}, ...toolSets);
+  const toolSets: Record<string, unknown>[] = [];
+  for (const client of clients) {
+    try {
+      const tools = await retry(() => client.tools(), retryConfig);
+      toolSets.push(tools as Record<string, unknown>);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`  Failed to discover tools: ${msg}`);
+    }
+  }
 
-  console.error(`Loaded ${Object.keys(tools).length} tools from ${servers.length} MCP server(s)`);
+  const tools = Object.assign({}, ...toolSets);
+  const totalServers = servers.length;
+  const connectedServers = clients.length;
+
+  console.error(
+    `Loaded ${Object.keys(tools).length} tools from ${connectedServers}/${totalServers} MCP server(s)`,
+  );
 
   async function cleanup() {
-    await Promise.all(clients.map((c) => c.close()));
+    const results = await Promise.allSettled(clients.map((c) => c.close()));
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        const reason = result.reason as unknown;
+        console.warn(`  Failed to close MCP client: ${reason instanceof Error ? reason.message : String(reason)}`);
+      }
+    }
   }
 
   return { tools, cleanup };
