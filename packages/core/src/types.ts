@@ -15,7 +15,9 @@ export interface PromptDefinition {
 export interface ChatLogEntry {
   timestamp: string;
   user: string;
-  assistant: string;
-  toolCalls: { name: string; args: unknown }[];
-  toolResults: { name: string; result: unknown }[];
+  assistant: unknown;
+  toolCalls?: unknown[];
+  toolResults?: unknown[];
+
+[key: string]: unknown;
 }
